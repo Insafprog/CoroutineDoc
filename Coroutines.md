@@ -455,3 +455,293 @@ fun main() = runBlocking {
 Результат null
 ```
 
+## СОЗДАНИЕ ПРИОСТАНОВЛИВАЕМЫХ ФУНКЦИЙ
+
+### Последовательный по умолчанию
+
+Предположим, что у нас есть две функции приостановки, определенные в другом месте, которые делают что-то полезное, например, какой-то вызов удаленного сервиса или вычисления. Мы просто притворяемся, что они полезны, но на самом деле каждый из них просто задерживается на секунду для целей этого примера:
+
+```kotlin
+suspend fun doSomethingUsefulOne(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь
+    return 13
+}
+
+suspend fun doSomethingUsefulTwo(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь тоже
+    return 29
+}
+```
+
+Что нам делать, если нам нужно, чтобы они вызывались последовательно - сначала doSomethingUsefulOne, а затем doSomethingUsefulTwo и вычислили сумму их результатов? На практике мы делаем это, если мы используем результат первой функции, чтобы принять решение о том, нужно ли нам вызывать вторую или решать, как ее вызывать.
+
+Мы используем обычный последовательный вызов, потому что код в сопрограмме, как и в обычном коде, является последовательным по умолчанию. Следующий пример демонстрирует это, измеряя общее время, необходимое для выполнения обеих функций приостановки:
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlin.system.*
+
+fun main() = runBlocking<Unit> {
+//sampleStart
+    val time = measureTimeMillis {
+        val one = doSomethingUsefulOne()
+        val two = doSomethingUsefulTwo()
+        println("Ответ ${one + two}")
+    }
+    println("Завыершено в $time мс")
+//sampleEnd    
+}
+
+suspend fun doSomethingUsefulOne(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь
+    return 13
+}
+
+suspend fun doSomethingUsefulTwo(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь тоже
+    return 29
+}
+```
+
+Вывод:
+
+```text
+Ответ 42
+Завершено в 2017 мс
+```
+
+### Одновременное использование асинхронности(async)
+
+Что если нет никаких зависимостей между вызовами doSomethingUsefulOne и doSomethingUsefulTwo, и мы хотим получить ответ быстрее, выполняя оба одновременно? Здесь асинхронность(async) приходит на помощь.
+
+Концептуально, async - это как launch. Он запускает отдельную сопрограмму, которая представляет собой легкую нить, которая работает одновременно со всеми остальными сопрограммами. Разница в том, что launch возвращает job и не несет никакого результирующего значения, в то время как async возвращает отложенное - легкое неблокирующее будущее, которое представляет обещание предоставить результат позже. Вы можете использовать .await () для отложенного значения, чтобы получить возможный результат, но отложенное(Deferred) также является заданием, поэтому вы можете отменить его, если это необходимо.
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlin.system.*
+
+fun main() = runBlocking<Unit> {
+//sampleStart
+    val time = measureTimeMillis {
+        val one = async { doSomethingUsefulOne() }
+        val two = async { doSomethingUsefulTwo() }
+        println("Ответ ${one.await() + two.await()}")
+    }
+    println("Завершено в $time мс")
+//sampleEnd    
+}
+
+suspend fun doSomethingUsefulOne(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь
+    return 13
+}
+
+suspend fun doSomethingUsefulTwo(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь тоже
+    return 29
+}
+```
+
+Вывод:
+
+```text
+Ответ 42
+Завершено в 1017 мс
+```
+
+Это в два раза быстрее, потому что две сопрограммы выполняются одновременно. Обратите внимание, что параллелизм с сопрограммами всегда явный.
+
+### Ленивый запуск async
+
+При желании async можно сделать ленивой, установив для ее параметра запуска значение CoroutineStart.LAZY. В этом режиме он запускает сопрограмму только тогда, когда потребуется его результат или если вызывается функция запуска его задания. Запустите следующий пример:
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlin.system.*
+
+fun main() = runBlocking<Unit> {
+//sampleStart
+    val time = measureTimeMillis {
+        val one = async(start = CoroutineStart.LAZY) { doSomethingUsefulOne() }
+        val two = async(start = CoroutineStart.LAZY) { doSomethingUsefulTwo() }
+        // некоторые вычисления
+        one.start() // запускаем первый
+        two.start() // запускаем второй
+        println("Ответ ${one.await() + two.await()}")
+    }
+    println("Завершено в $time мс")
+//sampleEnd    
+}
+
+suspend fun doSomethingUsefulOne(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь
+    return 13
+}
+
+suspend fun doSomethingUsefulTwo(): Int {
+    delay(1000L) // притвориться, что мы делаем что-то полезное здесь тоже
+    return 29
+}
+```
+
+Вывод:
+
+```text
+Ответ 42
+Завершено в 1017 мс
+```
+
+Итак, здесь две сопрограммы определены, но не выполнены, как в предыдущем примере, но управление предоставляется программисту, когда именно начинать выполнение, вызывая start. Сначала мы запускаем один, затем запускаем второй, а затем ожидаем окончания отдельных сопрограмм.
+
+Обратите внимание, что если мы просто вызовем await в println без первого вызова start для отдельных сопрограмм, это приведет к последовательному поведению, поскольку await начинает выполнение сопрограммы и ожидает его завершения, что не является предполагаемым вариантом использования для ленивого запуска. Вариант использования async (start = CoroutineStart.LAZY) является заменой стандартной функции lazy в случаях, когда вычисление значения включает в себя приостановку функций.
+
+### Асинхронные функции
+
+Мы можем определить функции асинхронного стиля, которые будут вызывать doSomethingUsefulOne и doSomethingUsefulTwo асинхронно, используя асинхронный конструктор сопрограмм с явной ссылкой GlobalScope. Мы называем такие функции суффиксом "... Async", чтобы подчеркнуть тот факт, что они только запускают асинхронные вычисления, и для получения результата необходимо использовать полученное отложенное значение.
+
+```kotlin
+// Тип результата somethingUsefulOneAsync Deferred<Int>
+fun somethingUsefulOneAsync() = GlobalScope.async {
+    doSomethingUsefulOne()
+}
+
+// Тип результата somethingUsefulTwoAsync Deferred<Int>
+fun somethingUsefulTwoAsync() = GlobalScope.async {
+    doSomethingUsefulTwo()
+}
+```
+
+Обратите внимание, что эти функции xxxAsync не являются функциями приостановки. Их можно использовать откуда угодно. Однако их использование всегда подразумевает асинхронное (здесь означает одновременное) выполнение их действия с вызывающим кодом.
+
+В следующем примере показано их использование вне сопрограммы:
+
+```kotlin
+//sampleStart
+// обратите внимание, что у нас нет `runBlocking` справа от` main` в этом примере
+fun main() {
+    val time = measureTimeMillis {
+        // мы можем инициировать асинхронные действия вне сопрограммы
+        val one = somethingUsefulOneAsync()
+        val two = somethingUsefulTwoAsync()
+        // но ожидание результата должно включать либо приостановку, либо блокировку.
+        // здесь мы используем `runBlocking {...}`, чтобы заблокировать основной поток в ожидании результата
+        runBlocking {
+            println("The answer is ${one.await() + two.await()}")
+        }
+    }
+    println("Completed in $time ms")
+}
+//sampleEnd
+
+fun somethingUsefulOneAsync() = GlobalScope.async {
+    doSomethingUsefulOne()
+}
+
+fun somethingUsefulTwoAsync() = GlobalScope.async {
+    doSomethingUsefulTwo()
+}
+
+suspend fun doSomethingUsefulOne(): Int {
+    delay(1000L) // притворись, что мы делаем что-то полезное здесь
+    return 13
+}
+
+suspend fun doSomethingUsefulTwo(): Int {
+    delay(1000L) // притворись, что мы делаем что-то полезное и здесь
+    return 29
+}
+```
+
+Этот стиль программирования с асинхронными функциями представлен здесь только для иллюстрации, потому что это популярный стиль в других языках программирования. Использование этого стиля с сопрограммами Kotlin настоятельно не рекомендуется по причинам, объясненным ниже.
+
+Рассмотрим, что произойдет, если между строкой val one = somethingUsefulOneAsync () и выражением one.await () в коде будет какая-то логическая ошибка, и программа сгенерирует исключение, и операция, выполняемая программой, будет прервана. Обычно глобальный обработчик ошибок может перехватить это исключение, зарегистрировать и сообщить об ошибке разработчикам, но в противном случае программа может продолжить выполнение других операций. Но здесь у нас есть кое-что UseOneAsync, все еще работающее в фоновом режиме, хотя инициирующая его операция была прервана. Эта проблема не возникает со структурированным параллелизмом, как показано в разделе ниже.
+
+### Структурный параллелизм с асинхронностью
+
+Давайте возьмем пример конкурент с использованием асинхронности и создадим функцию, которая одновременно выполняет doSomethingUsefulOne и doSomethingUsefulTwo и возвращает сумму их результатов. Поскольку асинхронный конструктор сопрограмм определен как расширение в CoroutineScope, нам необходимо иметь его в области видимости, и именно это обеспечивает функция coroutineScope:
+
+```kotlin
+suspend fun concurrentSum(): Int = coroutineScope {
+    val one = async { doSomethingUsefulOne() }
+    val two = async { doSomethingUsefulTwo() }
+    one.await() + two.await()
+}
+```
+
+Таким образом, если что-то пойдет не так в коде функции concurrentSum и он выдаст исключение, все сопрограммы, запущенные в его области действия, будут отменены.
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlin.system.*
+
+fun main() = runBlocking<Unit> {
+//sampleStart
+    val time = measureTimeMillis {
+        println("Ответ ${concurrentSum()}")
+    }
+    println("Завершено в $time мс")
+//sampleEnd    
+}
+
+suspend fun concurrentSum(): Int = coroutineScope {
+    val one = async { doSomethingUsefulOne() }
+    val two = async { doSomethingUsefulTwo() }
+    one.await() + two.await()
+}
+
+suspend fun doSomethingUsefulOne(): Int {
+    delay(1000L) // притворись, что мы делаем что-то полезное здесь
+    return 13
+}
+
+suspend fun doSomethingUsefulTwo(): Int {
+    delay(1000L) // притворись, что мы делаем что-то полезное и здесь
+    return 29
+}
+```
+
+У нас все еще происходит одновременное выполнение обеих операций, как видно из вывода вышеуказанной основной функции:
+
+```text
+Ответ 42
+Завершено в 1017 мс
+```
+
+Отмена всегда распространяется через иерархию сопрограмм:
+
+```kotlin
+import kotlinx.coroutines.*
+
+fun main() = runBlocking<Unit> {
+    try {
+        failedConcurrentSum()
+    } catch(e: ArithmeticException) {
+        println("Вычисление прервалось с ArithmeticException")
+    }
+}
+
+suspend fun failedConcurrentSum(): Int = coroutineScope {
+    val one = async<Int> { 
+        try {
+            delay(Long.MAX_VALUE) // Эмулирует очень длинные вычисления
+            42
+        } finally {
+            println("Первая дочерняя была отменена")
+        }
+    }
+    val two = async<Int> { 
+        println("Вторая дочерняя сбросила исключение")
+        throw ArithmeticException()
+    }
+    one.await() + two.await()
+}
+```
+
+Обратите внимание, как и первый async, и ожидающий родитель отменяются при сбое одного из дочерних элементов (а именно, двух):
+
+```text
+Вторая дочерняя сбросила исключение
+Первая дочерняя была отменена
+Вычисление прервалось с ArithmeticException
+```
+
